@@ -7,13 +7,21 @@ import (
 	"time"
 )
 
+// envOrString returns the environment variable value if set, otherwise returns the default value.
+func envOrString(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	return def
+}
+
 func parseFlags() *Config {
-	apiKey := flag.String("apikey", "", "Octopus API key")
-	givAPIKey := flag.String("givApikey", "", "GivEnergy API key")
-	accountID := flag.String("accountID", "", "Octopus Account ID")
-	serial := flag.String("inverterSerial", "", "GivEnergy inverter serial number")
-	outCSV := flag.String("out", "output.csv", "Output CSV file")
-	cacheDir := flag.String("cache", "disable", "Directory for HTTP cache ('disable' to disable, empty for temporary directory)")
+	apiKey := flag.String("apikey", envOrString("OCTOPUS_API_KEY", ""), "Octopus API key")
+	givAPIKey := flag.String("givApikey", envOrString("GIVENERGY_API_KEY", ""), "GivEnergy API key")
+	accountID := flag.String("accountID", envOrString("OCTOPUS_ACCOUNT_ID", ""), "Octopus Account ID")
+	serial := flag.String("inverterSerial", envOrString("GIVENERGY_SERIAL", ""), "GivEnergy inverter serial number")
+	outCSV := flag.String("out", envOrString("OUTPUT_CSV", "output.csv"), "Output CSV file")
+	cacheDir := flag.String("cache", envOrString("CACHE_DIR", "disable"), "Directory for HTTP cache ('disable' to disable, empty for temporary directory)")
 	startTime := flag.String("startTime", "", "Start time for data fetching (optional, RFC3339 format)")
 	flag.Parse()
 
