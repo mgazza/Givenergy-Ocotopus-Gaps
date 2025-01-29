@@ -146,6 +146,9 @@ func writeCSV(filename string, data []*UsageRow) error {
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
+	// Remove the first row as since we don't have the data for the previous row it's not valid
+	data = data[1:]
+
 	header := []string{
 		"Timestamp",
 		"Cumulative_Import",
@@ -154,20 +157,36 @@ func writeCSV(filename string, data []*UsageRow) error {
 		"Export_KWh",
 		"Import_Price",
 		"Export_Price",
+		"Import_Cost",
+		"Export_Cost",
 	}
 	if err := writer.Write(header); err != nil {
 		return err
 	}
 
 	for _, row := range data {
+		// Convert prices to integer representation (pence * 10,000)
+		importPriceInt := int64(row.ImportPrice * 10000)
+		exportPriceInt := int64(row.ExportPrice * 10000)
+
+		// Convert kWh to integer representation (kWh * 10,000)
+		importKWhInt := int64(row.ImportKWh * 10000)
+		exportKWhInt := int64(row.ExportKWh * 10000)
+
+		// Compute costs as integer math (total pence * 10,000)
+		importCostInt := (importKWhInt * importPriceInt) / 10000
+		exportCostInt := (exportKWhInt * exportPriceInt) / 10000
+
 		record := []string{
 			row.Timestamp.Format(time.RFC3339),
 			fmt.Sprintf("%.4f", row.CumulativeImportInverter),
 			fmt.Sprintf("%.4f", row.CumulativeExportInverter),
-			fmt.Sprintf("%.4f", row.ImportKWh),
-			fmt.Sprintf("%.4f", row.ExportKWh),
+			fmt.Sprintf("%.16f", row.ImportKWh),
+			fmt.Sprintf("%.16f", row.ExportKWh),
 			fmt.Sprintf("%.4f", row.ImportPrice),
 			fmt.Sprintf("%.4f", row.ExportPrice),
+			fmt.Sprintf("%.2f", float64(importCostInt)/10000),
+			fmt.Sprintf("%.2f", float64(exportCostInt)/10000),
 		}
 		if err := writer.Write(record); err != nil {
 			return err
