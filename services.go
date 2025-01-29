@@ -39,39 +39,49 @@ func NewGivEnergyService(tr http.RoundTripper, bearerToken string) *GivEnergySer
 // FetchHalfHourlyInverterData retrieves half-hour usage data from GivEnergy with pagination.
 func (s *GivEnergyService) FetchHalfHourlyInverterData(serial string, start, end time.Time) (map[time.Time]*UsageRow, error) {
 	out := make(map[time.Time]*UsageRow)
-	pageSize := int64(300)
+	pageSize := int64(500)
+	page := int64(1)
 
 	for day := start; day.Before(end); day = day.Add(24 * time.Hour) {
 		log.Printf("Getting inverter data for %s\n", day.Format("2006-01-02"))
 		params := inverter_data.NewGetDataPoints2Params().
 			WithDate(day.Format("2006-01-02")).
 			WithInverterSerialNumber(serial).
-			WithPageSize(&pageSize)
+			WithPageSize(&pageSize).WithPage(&page)
 
-		response, err := s.Client.InverterData.GetDataPoints2(params, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch inverter data: %w", err)
-		}
+		for {
+			response, err := s.Client.InverterData.GetDataPoints2(params, nil)
+			if err != nil {
+				return nil, fmt.Errorf("failed to fetch inverter data: %w", err)
+			}
+			log.Printf("Got %d records\n", len(response.Payload.Data))
 
-		for _, d := range response.Payload.Data {
-			hf := time.Time(d.Time).Truncate(30 * time.Minute)
-			export := d.Total.Grid.Export
-			imported := d.Total.Grid.Import
+			for _, d := range response.Payload.Data {
+				hf := time.Time(d.Time).Truncate(30 * time.Minute)
+				export := d.Total.Grid.Export
+				imported := d.Total.Grid.Import
 
-			row, exists := out[hf]
-			if !exists {
-				row = &UsageRow{
-					Timestamp: hf,
+				row, exists := out[hf]
+				if !exists {
+					row = &UsageRow{
+						Timestamp: hf,
+					}
+					out[hf] = row
 				}
-				out[hf] = row
+
+				if export > row.CumulativeExportInverter {
+					row.CumulativeExportInverter = export
+				}
+				if imported > row.CumulativeImportInverter {
+					row.CumulativeImportInverter = imported
+				}
 			}
 
-			if export > row.CumulativeExportInverter {
-				row.CumulativeExportInverter = export
+			if response.Payload.Meta.CurrentPage == response.Payload.Meta.LastPage {
+				break
 			}
-			if imported > row.CumulativeImportInverter {
-				row.CumulativeImportInverter = imported
-			}
+			page++
+			log.Printf("...Page %d\n", page)
 		}
 	}
 
