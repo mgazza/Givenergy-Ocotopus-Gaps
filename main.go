@@ -23,10 +23,12 @@ func parseFlags() *Config {
 	outCSV := flag.String("out", envOrString("OUTPUT_CSV", "output.csv"), "Output CSV file")
 	cacheDir := flag.String("cache", envOrString("CACHE_DIR", "disable"), "Directory for HTTP cache ('disable' to disable, empty for temporary directory)")
 	startTime := flag.String("startTime", "", "Start time for data fetching (optional, RFC3339 format)")
+	geoUsername := flag.String("geoUser", "", "Geo Username")
+	geoPassword := flag.String("geoPassword", "", "Geo Password")
 	flag.Parse()
 
-	if *apiKey == "" || *accountID == "" || *serial == "" || *givAPIKey == "" {
-		log.Fatalf("Required flags missing. Usage: %s -apikey=... -givApikey=... -accountID=... -inverterSerial=...", os.Args[0])
+	if *apiKey == "" || *accountID == "" || *serial == "" || *givAPIKey == "" || *geoUsername == "" || *geoPassword == "" {
+		log.Fatalf("Required flags missing. Usage: %s -apikey=... -givApikey=... -accountID=... -inverterSerial=... -geoUser=... -geoPassword=...", os.Args[0])
 	}
 
 	var parsedStartTime *time.Time
@@ -49,6 +51,8 @@ func parseFlags() *Config {
 		CacheDirectory: *cacheDir,
 		StartTime:      parsedStartTime,
 		EndTime:        endTime,
+		GeoUsername:    *geoUsername,
+		GeoPassword:    *geoPassword,
 	}
 }
 
