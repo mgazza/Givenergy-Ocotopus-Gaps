@@ -8,8 +8,6 @@ import (
 	"os"
 	"sort"
 	"time"
-
-	"git.sr.ht/~mariusor/cache"
 )
 
 // Config contains configuration for the application.
@@ -47,8 +45,9 @@ func NewApp(config *Config) *App {
 		if cacheDir == "" {
 			cacheDir = os.TempDir()
 		}
-		//rt = cache.ForDuration(24*time.Hour, http.DefaultTransport, cache.FS(cacheDir))
-		rt = cache.Shared(http.DefaultTransport, cache.FS(cacheDir))
+		rt = &CachingRoundTripper{
+			UnderlyingTransport: http.DefaultTransport, CacheDir: cacheDir,
+		}
 
 		log.Printf("HTTP caching enabled in directory: %s", cacheDir)
 	} else {
