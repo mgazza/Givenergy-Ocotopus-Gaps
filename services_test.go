@@ -78,7 +78,8 @@ func TestFetchHalfHourlyInverterData(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2025, 1, 1, 23, 59, 59, 0, time.UTC)
 
-	data, err := givService.FetchHalfHourlyInverterData(serial, start, end)
+	data := map[time.Time]*UsageRow{}
+	err := givService.FetchHalfHourlyInverterData(data, serial, start, end)
 	require.NoError(t, err, "Expected no error while fetching inverter data")
 	require.Len(t, data, 48, "Expected 48 data points")
 	require.Equal(t, 1842.3, data[start].CumulativeImportInverter, "Unexpected first cumulative import")
@@ -176,7 +177,7 @@ func TestGetMetersAndTariff(t *testing.T) {
 
 	octopusService := NewOctopusService(mockRoundTripper, "dummyApiKey")
 
-	importMeter, exportMeter, err := octopusService.GetMetersAndTariff("dummyAccountId")
+	importMeter, exportMeter, _, err := octopusService.GetMetersAndTariff("dummyAccountId")
 	require.NoError(t, err, "Expected no error while fetching meters and tariffs")
 
 	require.Equal(t, "123456789", importMeter.Mpan, "Unexpected import meter MPAN")

@@ -37,8 +37,8 @@ func NewGivEnergyService(tr http.RoundTripper, bearerToken string) *GivEnergySer
 }
 
 // FetchHalfHourlyInverterData retrieves half-hour usage data from GivEnergy with pagination.
-func (s *GivEnergyService) FetchHalfHourlyInverterData(serial string, start, end time.Time) (map[time.Time]*UsageRow, error) {
-	out := make(map[time.Time]*UsageRow)
+func (s *GivEnergyService) FetchHalfHourlyInverterData(out map[time.Time]*UsageRow, serial string, start, end time.Time) error {
+	total := 0
 	pageSize := int64(500)
 	page := int64(1)
 
@@ -52,12 +52,13 @@ func (s *GivEnergyService) FetchHalfHourlyInverterData(serial string, start, end
 		for {
 			response, err := s.Client.InverterData.GetDataPoints2(params, nil)
 			if err != nil {
-				return nil, fmt.Errorf("failed to fetch inverter data: %w", err)
+				return fmt.Errorf("failed to fetch inverter data: %w", err)
 			}
 			log.Printf("Got %d records\n", len(response.Payload.Data))
 
 			for _, d := range response.Payload.Data {
-				hf := time.Time(d.Time).Truncate(30 * time.Minute)
+				total++
+				hf := time.Time(d.Time).Truncate(30 * time.Minute).Local()
 				export := d.Total.Grid.Export
 				imported := d.Total.Grid.Import
 
@@ -96,14 +97,16 @@ func (s *GivEnergyService) FetchHalfHourlyInverterData(serial string, start, end
 			}
 		} else {
 			if previous != nil {
-				row.ImportKWh = row.CumulativeImportInverter - previous.CumulativeImportInverter
-				row.ExportKWh = row.CumulativeExportInverter - previous.CumulativeExportInverter
+				row.GE_ImportKWh = row.CumulativeImportInverter - previous.CumulativeImportInverter
+				row.GE_ExportKWh = row.CumulativeExportInverter - previous.CumulativeExportInverter
 			}
 			previous = row
 		}
 	}
 
-	return out, nil
+	log.Printf("Fetched %d GivEnergy records", total)
+
+	return nil
 }
 
 // OctopusService handles interactions with the Octopus Energy API.
@@ -125,15 +128,16 @@ func NewOctopusService(rt http.RoundTripper, apiKey string) *OctopusService {
 }
 
 // GetMetersAndTariff fetches meter information and tariff details.
-func (s *OctopusService) GetMetersAndTariff(accountID string) (*MeterInfo, *MeterInfo, error) {
+// returns the import, export and gas meter
+func (s *OctopusService) GetMetersAndTariff(accountID string) (*MeterInfo, *MeterInfo, *MeterInfo, error) {
 	params := accounts.NewGetAccountParams().WithAccountID(accountID)
 	response, err := s.Client.Accounts.GetAccount(params, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch account details: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to fetch account details: %w", err)
 	}
 
 	if len(response.Payload.Properties) < 1 {
-		return nil, nil, fmt.Errorf("no properties found on the account")
+		return nil, nil, nil, fmt.Errorf("no properties found on the account")
 	}
 
 	property := response.Payload.Properties[0]
@@ -142,7 +146,7 @@ func (s *OctopusService) GetMetersAndTariff(accountID string) (*MeterInfo, *Mete
 	productParams := products.NewListProductsParams()
 	productResponse, err := s.Client.Products.ListProducts(productParams, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch products: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to fetch products: %w", err)
 	}
 
 	findProductCode := func(productCode string) string {
@@ -154,7 +158,7 @@ func (s *OctopusService) GetMetersAndTariff(accountID string) (*MeterInfo, *Mete
 		return ""
 	}
 
-	var importMeter, exportMeter *MeterInfo
+	var importMeter, exportMeter, gasMeter *MeterInfo
 	for _, meterPoint := range property.ElectricityMeterPoints {
 		if len(meterPoint.Meters) < 1 {
 			continue
@@ -180,7 +184,23 @@ func (s *OctopusService) GetMetersAndTariff(accountID string) (*MeterInfo, *Mete
 		}
 	}
 
-	return importMeter, exportMeter, nil
+	for _, meterPoint := range property.GasMeterPoints {
+		if len(meterPoint.Meters) < 1 {
+			continue
+		}
+
+		tariffCode := meterPoint.Agreements[len(meterPoint.Agreements)-1].TariffCode
+		productCode := findProductCode(tariffCode)
+
+		gasMeter = &MeterInfo{
+			ProductCode:  productCode,
+			TariffCode:   tariffCode,
+			SerialNumber: meterPoint.Meters[0].SerialNumber,
+			Mpan:         meterPoint.Mprn,
+		}
+	}
+
+	return importMeter, exportMeter, gasMeter, nil
 }
 
 // GetLastReading fetches the start date time of the last reading from the Octopus API.
@@ -243,26 +263,46 @@ func (s *OctopusService) FetchTariffs(productCode, tariffCode string, start, end
 	return allTariffs, nil
 }
 
-// Placeholder types for API responses
-type UsageRow struct {
-	Timestamp                time.Time
-	CumulativeImportInverter float64
-	CumulativeExportInverter float64
-	ImportKWh                float64
-	ExportKWh                float64
-	ImportPrice              float64
-	ExportPrice              float64
-}
+func (s *OctopusService) GetData(usage map[time.Time]*UsageRow, meter *MeterInfo, startDateTime, endDateTime time.Time) error {
+	total := 0
+	page := int64(1)
+	pageSize := int64(336) // two weeks of 30 mins
+	params := electricity_meter_points.NewListConsumptionForAnElectricityMeterParams().
+		WithMpan(meter.Mpan).
+		WithSerialNumber(meter.SerialNumber).
+		WithPeriodFrom((*strfmt.DateTime)(&startDateTime)).
+		WithPeriodTo((*strfmt.DateTime)(&endDateTime)).
+		WithPageSize(&pageSize).
+		WithPage(&page)
 
-type MeterInfo struct {
-	ProductCode  string
-	TariffCode   string
-	SerialNumber string
-	Mpan         string
-}
+	for {
+		response, err := s.Client.ElectricityMeterPoints.ListConsumptionForAnElectricityMeter(params, nil)
+		if err != nil {
+			return fmt.Errorf("error querying octopus data: %w", err)
+		}
+		if !response.IsSuccess() {
+			return fmt.Errorf("error querying octopus data: %v", response.Error())
+		}
 
-type TariffData struct {
-	Rate      float64
-	ValidFrom *time.Time
-	ValidTo   *time.Time
+		for _, r := range response.Payload.Results {
+			total++
+			hf := time.Time(*r.IntervalStart).Truncate(30 * time.Minute).Local()
+			row, ok := usage[hf]
+			if !ok {
+				rt := UsageRow{Timestamp: hf}
+				row = &rt
+				usage[hf] = row
+			}
+			row.OCTO_ImportKWh = r.Consumption
+		}
+
+		if response.Payload.Next == nil {
+			break
+		}
+		page++
+	}
+
+	log.Printf("Fetched %d Octopus records", total)
+
+	return nil
 }
