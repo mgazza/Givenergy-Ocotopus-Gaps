@@ -75,14 +75,14 @@ func TestFetchHalfHourlyInverterData(t *testing.T) {
 
 	givService := NewGivEnergyService(mockRoundTripper, "dummyBearerToken")
 	serial := "ABC12345"
-	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	end := time.Date(2025, 1, 1, 23, 59, 59, 0, time.UTC)
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.Local)
+	end := time.Date(2025, 1, 1, 23, 59, 59, 0, time.Local)
 
 	data := map[time.Time]*UsageRow{}
 	err := givService.FetchHalfHourlyInverterData(data, serial, start, end)
 	require.NoError(t, err, "Expected no error while fetching inverter data")
 	require.Len(t, data, 48, "Expected 48 data points")
-	require.Equal(t, 1842.3, data[start].CumulativeImportInverter, "Unexpected first cumulative import")
+	require.Equal(t, floatPtr(1842.3), data[start].CumulativeImportInverter, "Unexpected first cumulative import")
 }
 
 func TestGetLastReading(t *testing.T) {

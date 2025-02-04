@@ -1,4 +1,3 @@
-// services.go
 package main
 
 import (
@@ -9,105 +8,12 @@ import (
 	"time"
 
 	httptransport "github.com/go-openapi/runtime/client"
-	strfmt "github.com/go-openapi/strfmt"
-	giv "github.com/mgazza/go-givenergy/client"
-	"github.com/mgazza/go-givenergy/client/inverter_data"
+	"github.com/go-openapi/strfmt"
 	octopus "github.com/mgazza/go-octopus-energy/client"
 	"github.com/mgazza/go-octopus-energy/client/accounts"
 	"github.com/mgazza/go-octopus-energy/client/electricity_meter_points"
 	"github.com/mgazza/go-octopus-energy/client/products"
 )
-
-// GivEnergyService handles interactions with the GivEnergy API.
-type GivEnergyService struct {
-	Client *giv.GivEnergyAPIDocumentationV1350
-}
-
-// NewGivEnergyService creates a new GivEnergyService with pre-configured authentication.
-func NewGivEnergyService(tr http.RoundTripper, bearerToken string) *GivEnergyService {
-	cfg := giv.DefaultTransportConfig()
-	transport := httptransport.New(cfg.Host, cfg.BasePath, cfg.Schemes)
-	transport.Transport = tr
-	transport.DefaultAuthentication = httptransport.BearerToken(bearerToken)
-
-	client := giv.New(transport, strfmt.Default)
-	return &GivEnergyService{
-		Client: client,
-	}
-}
-
-// FetchHalfHourlyInverterData retrieves half-hour usage data from GivEnergy with pagination.
-func (s *GivEnergyService) FetchHalfHourlyInverterData(out map[time.Time]*UsageRow, serial string, start, end time.Time) error {
-	total := 0
-	pageSize := int64(500)
-	page := int64(1)
-
-	for day := start; day.Before(end); day = day.Add(24 * time.Hour) {
-		log.Printf("Getting inverter data for %s\n", day.Format("2006-01-02"))
-		params := inverter_data.NewGetDataPoints2Params().
-			WithDate(day.Format("2006-01-02")).
-			WithInverterSerialNumber(serial).
-			WithPageSize(&pageSize).WithPage(&page)
-
-		for {
-			response, err := s.Client.InverterData.GetDataPoints2(params, nil)
-			if err != nil {
-				return fmt.Errorf("failed to fetch inverter data: %w", err)
-			}
-			log.Printf("Got %d records\n", len(response.Payload.Data))
-
-			for _, d := range response.Payload.Data {
-				total++
-				hf := time.Time(d.Time).Truncate(30 * time.Minute).Local()
-				export := d.Total.Grid.Export
-				imported := d.Total.Grid.Import
-
-				row, exists := out[hf]
-				if !exists {
-					row = &UsageRow{
-						Timestamp: hf,
-					}
-					out[hf] = row
-				}
-
-				if export > row.CumulativeExportInverter {
-					row.CumulativeExportInverter = export
-				}
-				if imported > row.CumulativeImportInverter {
-					row.CumulativeImportInverter = imported
-				}
-			}
-
-			if response.Payload.Meta.CurrentPage == response.Payload.Meta.LastPage {
-				break
-			}
-			page++
-			log.Printf("...Page %d\n", page)
-		}
-	}
-
-	var previous *UsageRow
-	for t := start; t.Before(end); t = t.Add(30 * time.Minute) {
-		row, exists := out[t]
-		if !exists {
-			if previous != nil {
-				c := *previous
-				row = &c
-				out[t] = row
-			}
-		} else {
-			if previous != nil {
-				row.GE_ImportKWh = row.CumulativeImportInverter - previous.CumulativeImportInverter
-				row.GE_ExportKWh = row.CumulativeExportInverter - previous.CumulativeExportInverter
-			}
-			previous = row
-		}
-	}
-
-	log.Printf("Fetched %d GivEnergy records", total)
-
-	return nil
-}
 
 // OctopusService handles interactions with the Octopus Energy API.
 type OctopusService struct {
@@ -225,7 +131,6 @@ func (s *OctopusService) GetLastReading(meter *MeterInfo) (time.Time, float64, e
 }
 
 // FetchTariffs fetches tariff data for the specified parameters.
-// FetchTariffs fetches tariff data for the specified parameters with pagination.
 func (s *OctopusService) FetchTariffs(productCode, tariffCode string, start, end time.Time) ([]TariffData, error) {
 	var allTariffs []TariffData
 	pageSize := int64(672) // Fetch two weeks of half-hour slots per page
@@ -263,7 +168,8 @@ func (s *OctopusService) FetchTariffs(productCode, tariffCode string, start, end
 	return allTariffs, nil
 }
 
-func (s *OctopusService) GetData(usage map[time.Time]*UsageRow, meter *MeterInfo, startDateTime, endDateTime time.Time) error {
+// GetMeterConsumption gets meter readings for the specified parameters.
+func (s *OctopusService) GetMeterConsumption(usage map[time.Time]*UsageRow, meter *MeterInfo, startDateTime, endDateTime time.Time, update func(value float64, row *UsageRow)) error {
 	total := 0
 	page := int64(1)
 	pageSize := int64(336) // two weeks of 30 mins
@@ -293,7 +199,7 @@ func (s *OctopusService) GetData(usage map[time.Time]*UsageRow, meter *MeterInfo
 				row = &rt
 				usage[hf] = row
 			}
-			row.OCTO_ImportKWh = r.Consumption
+			update(r.Consumption, row)
 		}
 
 		if response.Payload.Next == nil {

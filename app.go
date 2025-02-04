@@ -48,7 +48,7 @@ func NewApp(config *Config) *App {
 		}
 		err := os.MkdirAll(cacheDir, 0755)
 		if err != nil {
-			log.Fatalf("failed to create cache dir: %w", err)
+			log.Fatalf("failed to create cache dir: %v", err)
 		}
 
 		rt = &CachingRoundTripper{
@@ -110,26 +110,35 @@ func (app *App) Run() error {
 	log.Println("Starting application...")
 	log.Printf("Using date range %s - %s", app.CollectionStart.Format(time.RFC3339), app.Config.EndTime.Format(time.RFC3339))
 
-	givData := make(map[time.Time]*UsageRow)
+	usage := make(map[time.Time]*UsageRow)
 	var err error
 
 	// Get data from geo
 	log.Println("Getting Octopus data...")
-	err = app.OctopusService.GetData(givData, app.ImportMeter, app.CollectionStart, app.Config.EndTime.UTC())
+	err = app.OctopusService.GetMeterConsumption(usage, app.ImportMeter, app.CollectionStart, app.Config.EndTime.UTC(), func(value float64, row *UsageRow) {
+		row.OCTO_ImportKWh = &value
+	})
+	if err != nil {
+		return fmt.Errorf("failed to fetch Ocotopus data: %w", err)
+	}
+
+	err = app.OctopusService.GetMeterConsumption(usage, app.ExportMeter, app.CollectionStart, app.Config.EndTime.UTC(), func(value float64, row *UsageRow) {
+		row.OCTO_ExportKWh = &value
+	})
 	if err != nil {
 		return fmt.Errorf("failed to fetch Ocotopus data: %w", err)
 	}
 
 	// Get data from geo
 	log.Println("Getting GEO data...")
-	err = app.GeoService.PopulateGeoData(givData, app.CollectionStart, app.Config.EndTime.UTC())
+	err = app.GeoService.PopulateGeoData(usage, app.CollectionStart, app.Config.EndTime.UTC())
 	if err != nil {
 		return fmt.Errorf("failed to fetch GEO data: %w", err)
 	}
 
 	// Fetch GivEnergy data
 	log.Printf("Getting GivEnergy inverter data ...")
-	err = app.GivService.FetchHalfHourlyInverterData(givData, app.Config.SerialNumber, app.CollectionStart, app.Config.EndTime.Local())
+	err = app.GivService.FetchHalfHourlyInverterData(usage, app.Config.SerialNumber, app.CollectionStart, app.Config.EndTime.Local())
 	if err != nil {
 		return fmt.Errorf("failed to fetch GivEnergy data: %w", err)
 	}
@@ -149,7 +158,7 @@ func (app *App) Run() error {
 
 	// Calculate half-hourly costs
 	var data []*UsageRow
-	for timestamp, row := range givData {
+	for timestamp, row := range usage {
 		row.ImportPrice = findRateForTime(timestamp, importTariffs)
 		row.ExportPrice = findRateForTime(timestamp, exportTariffs)
 		data = append(data, row)
@@ -168,7 +177,7 @@ func (app *App) Run() error {
 	return nil
 }
 
-func findRateForTime(t time.Time, intervals []TariffData) float64 {
+func findRateForTime(t time.Time, intervals []TariffData) *float64 {
 	for _, iv := range intervals {
 		// Handle nil Start: treat as before zero time
 		startBefore := iv.ValidFrom == nil || !t.Before(*iv.ValidFrom)
@@ -176,10 +185,10 @@ func findRateForTime(t time.Time, intervals []TariffData) float64 {
 		endAfter := iv.ValidTo == nil || t.Before(*iv.ValidTo)
 
 		if startBefore && endAfter {
-			return iv.Rate
+			return &iv.Rate
 		}
 	}
-	return 0.0
+	return nil
 }
 
 func truncateToMidnight(t time.Time) time.Time {

@@ -185,9 +185,8 @@ func (s *GeoTogetherService) PopulateGeoData(usage map[time.Time]*UsageRow, star
 			}
 			count++
 		}
-
 		if count == 0 {
-			log.Printf("No GEO data for %s, using previous values", t.Format(time.RFC3339))
+			log.Printf("No GEO data for %s, leaving as nil", t.Format(time.RFC3339))
 			continue
 		}
 
@@ -202,10 +201,10 @@ func (s *GeoTogetherService) PopulateGeoData(usage map[time.Time]*UsageRow, star
 		}
 
 		// Assign energy used in the 30-minute window
-		row.GEO_ImportWh = float64(sumEnergy)
-		row.GEO_ImportGasWh = float64(sumGas)
-		row.GEO_ImportMilliPenceCost = sumCost
-		row.GEO_ImportGasMilliPenceCost = sumGasCost
+		row.GEO_ImportWh = &sumEnergy
+		row.GEO_ImportGasWh = &sumGas
+		row.GEO_ImportMilliPenceCost = &sumCost
+		row.GEO_ImportGasMilliPenceCost = &sumGasCost
 	}
 
 	log.Printf("Fetched %d GEO records", count)

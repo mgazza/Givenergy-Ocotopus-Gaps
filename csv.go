@@ -7,7 +7,41 @@ import (
 	"time"
 )
 
+// Helper function to return a pointer to a float64 with optional conversion
+func convertInt64(val *int64, divisor float64) *float64 {
+	if val != nil {
+		newVal := float64(*val) / divisor
+		return &newVal
+	}
+	return nil
+}
+
+// Helper function to format float64 values with precision
+func formatFloat(val *float64, precision int) string {
+	if val != nil {
+		formatStr := fmt.Sprintf("%%.%df", precision)
+		return fmt.Sprintf(formatStr, *val)
+	}
+	return "NaN"
+}
+
+// Compute the cost using integer math for accuracy
+func computeCost(energy *float64, price *float64) string {
+	if energy != nil && price != nil {
+		energyInt := int64(*energy * (10000))
+		priceInt := int64(*price * 10000)
+		costInt := (energyInt * priceInt) / 10000
+		return fmt.Sprintf("%.2f", float64(costInt)/10000)
+	}
+	return "NaN"
+}
+
+// Write data to a CSV file
 func writeCSV(filename string, data []*UsageRow) error {
+	if len(data) < 2 {
+		return fmt.Errorf("not enough data to write CSV")
+	}
+
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -17,7 +51,7 @@ func writeCSV(filename string, data []*UsageRow) error {
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	// Remove the first row as since we don't have the data for the previous row it's not valid
+	// Remove the first row since we don't have the data for the previous row
 	data = data[1:]
 
 	header := []string{
@@ -28,46 +62,38 @@ func writeCSV(filename string, data []*UsageRow) error {
 		"GE_Export_KWh",
 		"GEO_Import_KWh",
 		"OCTO_Import_KWh",
+		"OCTO_Export_KWh",
+		"GEO_Gas_KWh",
 		"Import_Price",
 		"Export_Price",
 		"GE_Import_PenceCost",
 		"GE_Export_PenceCost",
-		"GEO_Gas_KWh",
-		"GEO_Gas_PenceCost",
 		"GEO_Import_PenceCost",
+		"OCTO_Import_PenceCost",
+		"OCTO_Export_PenceCost",
 	}
 	if err := writer.Write(header); err != nil {
 		return err
 	}
 
 	for _, row := range data {
-		// Convert prices to integer representation (pence * 10,000)
-		importPriceInt := int64(row.ImportPrice * 10000)
-		exportPriceInt := int64(row.ExportPrice * 10000)
-
-		// Convert kWh to integer representation (kWh * 10,000)
-		importKWhInt := int64(row.GE_ImportKWh * 10000)
-		exportKWhInt := int64(row.GE_ExportKWh * 10000)
-
-		// Compute costs as integer math (total pence * 10,000)
-		importCostInt := (importKWhInt * importPriceInt) / 10000
-		exportCostInt := (exportKWhInt * exportPriceInt) / 10000
-
 		record := []string{
 			row.Timestamp.Format(time.RFC3339),
-			fmt.Sprintf("%.4f", row.CumulativeImportInverter),
-			fmt.Sprintf("%.4f", row.CumulativeExportInverter),
-			fmt.Sprintf("%.16f", row.GE_ImportKWh),
-			fmt.Sprintf("%.16f", row.GE_ExportKWh),
-			fmt.Sprintf("%.16f", float64(row.GEO_ImportWh)/1000),
-			fmt.Sprintf("%.4f", row.OCTO_ImportKWh),
-			fmt.Sprintf("%.4f", row.ImportPrice),
-			fmt.Sprintf("%.4f", row.ExportPrice),
-			fmt.Sprintf("%.2f", float64(importCostInt)/10000),
-			fmt.Sprintf("%.2f", float64(exportCostInt)/10000),
-			fmt.Sprintf("%.4f", float64(row.GEO_ImportGasWh)/1000),
-			fmt.Sprintf("%.4f", float64(row.GEO_ImportGasMilliPenceCost)/1000.0),
-			fmt.Sprintf("%.4f", float64(row.GEO_ImportMilliPenceCost)/1000.0),
+			formatFloat(row.CumulativeImportInverter, 4),
+			formatFloat(row.CumulativeExportInverter, 4),
+			formatFloat(row.GE_ImportKWh, 16),
+			formatFloat(row.GE_ExportKWh, 16),
+			formatFloat(convertInt64(row.GEO_ImportWh, 1000), 16),
+			formatFloat(row.OCTO_ImportKWh, 16),
+			formatFloat(row.OCTO_ExportKWh, 16),
+			formatFloat(convertInt64(row.GEO_ImportGasWh, 1000), 16),
+			formatFloat(row.ImportPrice, 4),
+			formatFloat(row.ExportPrice, 4),
+			computeCost(row.GE_ImportKWh, row.ImportPrice),
+			computeCost(row.GE_ExportKWh, row.ExportPrice),
+			computeCost(convertInt64(row.GEO_ImportWh, 1000), row.ImportPrice),
+			computeCost(row.OCTO_ImportKWh, row.ImportPrice),
+			computeCost(row.OCTO_ExportKWh, row.ExportPrice),
 		}
 		if err := writer.Write(record); err != nil {
 			return err
