@@ -22,9 +22,10 @@ func parseFlags() *Config {
 	serial := flag.String("inverterSerial", envOrString("GIVENERGY_SERIAL", ""), "GivEnergy inverter serial number")
 	outCSV := flag.String("out", envOrString("OUTPUT_CSV", "output.csv"), "Output CSV file")
 	cacheDir := flag.String("cache", envOrString("CACHE_DIR", "disable"), "Directory for HTTP cache ('disable' to disable, empty for temporary directory)")
-	startTime := flag.String("startTime", "", "Start time for data fetching (optional, RFC3339 format)")
-	geoUsername := flag.String("geoUser", "", "Geo Username")
-	geoPassword := flag.String("geoPassword", "", "Geo Password")
+	startDateTime := flag.String("startDateTime", envOrString("START", ""), "Start date time for data fetching (optional, RFC3339 format)")
+	endDateTime := flag.String("endDateTime", envOrString("END", ""), "End date time for data fetching (optional, RFC3339 format)")
+	geoUsername := flag.String("geoUser", envOrString("GEO_USER", ""), "Geo Username")
+	geoPassword := flag.String("geoPassword", envOrString("GEO_PASSWORD", ""), "Geo Password")
 	flag.Parse()
 
 	if *apiKey == "" || *accountID == "" || *serial == "" || *givAPIKey == "" || *geoUsername == "" || *geoPassword == "" {
@@ -32,15 +33,24 @@ func parseFlags() *Config {
 	}
 
 	var parsedStartTime *time.Time
-	if *startTime != "" {
-		parsedTime, err := time.Parse(time.RFC3339, *startTime)
+	if *startDateTime != "" {
+		parsedTime, err := time.Parse(time.RFC3339, *startDateTime)
 		if err != nil {
 			log.Fatalf("Invalid startTime format: %v", err)
 		}
 		parsedStartTime = &parsedTime
 	}
 
-	endTime := time.Now()
+	var parsedEndTime time.Time
+	if *endDateTime != "" {
+		parsedTime, err := time.Parse(time.RFC3339, *endDateTime)
+		if err != nil {
+			log.Fatalf("Invalid endTime format: %v", err)
+		}
+		parsedEndTime = parsedTime
+	} else {
+		parsedEndTime = time.Now()
+	}
 
 	return &Config{
 		APIKey:         *apiKey,
@@ -50,7 +60,7 @@ func parseFlags() *Config {
 		OutputCSV:      *outCSV,
 		CacheDirectory: *cacheDir,
 		StartTime:      parsedStartTime,
-		EndTime:        endTime,
+		EndTime:        parsedEndTime,
 		GeoUsername:    *geoUsername,
 		GeoPassword:    *geoPassword,
 	}
