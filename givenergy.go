@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 
 	httptransport "github.com/go-openapi/runtime/client"
@@ -31,99 +32,98 @@ func NewGivEnergyService(tr http.RoundTripper, bearerToken string) *GivEnergySer
 	}
 }
 
-// FetchHalfHourlyInverterData retrieves half-hour usage data from GivEnergy with pagination.
+// FetchHalfHourlyInverterData retrieves half-hourly usage data using interpolation.
 func (s *GivEnergyService) FetchHalfHourlyInverterData(out map[time.Time]*UsageRow, serial string, start, end time.Time) error {
 	total := 0
 	pageSize := int64(500)
-	page := int64(1)
+	data := []struct {
+		timestamp        time.Time
+		cumulativeImport float64
+		cumulativeExport float64
+	}{}
 
-	type GE_UsageRow struct {
-		Timestamp                time.Time
-		CumulativeImportInverter float64
-		CumulativeExportInverter float64
-		ImportKWh                float64
-		ExportKWh                float64
-	}
-	data := map[time.Time]*GE_UsageRow{}
-
+	// Fetch daily data from GivEnergy with pagination
 	for day := start; day.Before(end); day = day.Add(24 * time.Hour) {
-		log.Printf("Getting inverter data for %s\n", day.Format("2006-01-02"))
-		params := inverter_data.NewGetDataPoints2Params().
-			WithDate(day.Format("2006-01-02")).
-			WithInverterSerialNumber(serial).
-			WithPageSize(&pageSize).WithPage(&page)
+		log.Printf("Fetching inverter data for %s", day.Format("2006-01-02"))
+		page := int64(1)
 
 		for {
+			params := inverter_data.NewGetDataPoints2Params().
+				WithDate(day.Format("2006-01-02")).
+				WithInverterSerialNumber(serial).
+				WithPageSize(&pageSize).
+				WithPage(&page)
+
 			response, err := s.Client.InverterData.GetDataPoints2(params, nil)
 			if err != nil {
 				return fmt.Errorf("failed to fetch inverter data: %w", err)
 			}
-			log.Printf("Got %d records\n", len(response.Payload.Data))
 
 			for _, d := range response.Payload.Data {
+				timestamp := time.Time(d.Time).Local()
+				data = append(data, struct {
+					timestamp        time.Time
+					cumulativeImport float64
+					cumulativeExport float64
+				}{timestamp, d.Total.Grid.Import, d.Total.Grid.Export})
 				total++
-				hf := time.Time(d.Time).Truncate(30 * time.Minute).Local()
-				export := d.Total.Grid.Export
-				imported := d.Total.Grid.Import
-
-				row, exists := data[hf]
-				if !exists {
-					row = &GE_UsageRow{
-						Timestamp: hf,
-					}
-					data[hf] = row
-				}
-
-				if export > row.CumulativeExportInverter {
-					row.CumulativeExportInverter = export
-				}
-				if imported > row.CumulativeImportInverter {
-					row.CumulativeImportInverter = imported
-				}
 			}
 
-			if response.Payload.Meta.CurrentPage == response.Payload.Meta.LastPage {
+			if response.Payload.Meta.CurrentPage >= response.Payload.Meta.LastPage {
 				break
 			}
 			page++
-			log.Printf("...Page %d\n", page)
 		}
 	}
 
-	var previous *GE_UsageRow
-	for t := start; t.Before(end); t = t.Add(30 * time.Minute) {
-		row, exists := data[t]
+	// Sort data by timestamp
+	sort.Slice(data, func(i, j int) bool { return data[i].timestamp.Before(data[j].timestamp) })
+
+	// Interpolate cumulative values at exact half-hour marks
+	var lastTime time.Time
+	var lastImport, lastExport float64
+
+	for t := start.Truncate(30 * time.Minute); t.Before(end); t = t.Add(30 * time.Minute) {
+		var interpImport, interpExport float64
+		var found bool
+		for i := 1; i < len(data); i++ {
+			if data[i].timestamp.After(t) {
+				prev := data[i-1]
+				next := data[i]
+				factor := float64(t.Sub(prev.timestamp)) / float64(next.timestamp.Sub(prev.timestamp))
+				interpImport = prev.cumulativeImport + factor*(next.cumulativeImport-prev.cumulativeImport)
+				interpExport = prev.cumulativeExport + factor*(next.cumulativeExport-prev.cumulativeExport)
+				found = true
+				break
+			}
+		}
+		if !found && len(data) > 0 {
+			interpImport = data[len(data)-1].cumulativeImport
+			interpExport = data[len(data)-1].cumulativeExport
+		}
+
+		// Adjust timestamps by shifting back by 30 minutes to fix misalignment
+		adjustedTime := t.Add(-30 * time.Minute)
+
+		row, exists := out[adjustedTime]
 		if !exists {
-			if previous != nil {
-				c := *previous
-				row = &c
-				data[t] = row
-			}
-		} else {
-			if previous != nil {
-				row.ImportKWh = row.CumulativeImportInverter - previous.CumulativeImportInverter
-				row.ExportKWh = row.CumulativeExportInverter - previous.CumulativeExportInverter
-			}
-			previous = row
+			row = &UsageRow{Timestamp: adjustedTime}
+			out[adjustedTime] = row
 		}
+		row.CumulativeImportInverter = &interpImport
+		row.CumulativeExportInverter = &interpExport
+
+		if !lastTime.IsZero() {
+			importDelta := interpImport - lastImport
+			exportDelta := interpExport - lastExport
+			row.GE_ImportKWh = &importDelta
+			row.GE_ExportKWh = &exportDelta
+		}
+		lastTime = adjustedTime
+		lastImport = interpImport
+		lastExport = interpExport
 	}
 
-	for k, v := range data {
-		o, ok := out[k]
-		if !ok {
-			on := UsageRow{
-				Timestamp: v.Timestamp,
-			}
-			o = &on
-			out[k] = o
-		}
-		o.CumulativeImportInverter = &v.CumulativeImportInverter
-		o.CumulativeExportInverter = &v.CumulativeExportInverter
-		o.GE_ImportKWh = &v.ImportKWh
-		o.GE_ExportKWh = &v.ExportKWh
-	}
-
-	log.Printf("Fetched %d GivEnergy records", total)
-
+	log.Printf("Processed %d GivEnergy records with interpolated cumulative values and derived usage, with corrected timestamps", total)
 	return nil
 }

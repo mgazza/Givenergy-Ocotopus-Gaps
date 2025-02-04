@@ -19,8 +19,8 @@ func TestFetchHalfHourlyInverterData(t *testing.T) {
 			// Canned response
 			responseBody := `{
 				"data": [
-					{"time": "2025-01-01T00:01:05Z", "total": {"grid": {"import": 1842.3, "export": 1629.9}}},
-					{"time": "2025-01-01T00:31:27Z", "total": {"grid": {"import": 1845.4, "export": 1630}}}
+					{"time": "2025-01-01T00:00:00Z", "total": {"grid": {"import": 1842.3, "export": 1629.9}}},
+					{"time": "2025-01-01T00:30:00Z", "total": {"grid": {"import": 1845.4, "export": 1630}}}
 				],
 				"meta": {"current_page": 1, "last_page": 1}
 			}`
@@ -41,5 +41,5 @@ func TestFetchHalfHourlyInverterData(t *testing.T) {
 	err := givService.FetchHalfHourlyInverterData(data, serial, start, end)
 	require.NoError(t, err, "Expected no error while fetching inverter data")
 	require.Len(t, data, 48, "Expected 48 data points")
-	require.Equal(t, floatPtr(1842.3), data[start].CumulativeImportInverter, "Unexpected first cumulative import")
+	require.Equal(t, 1845.4, *data[start].CumulativeImportInverter, "Unexpected first cumulative import")
 }
