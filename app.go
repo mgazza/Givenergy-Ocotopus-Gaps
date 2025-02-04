@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"sort"
 	"time"
 )
@@ -45,8 +46,13 @@ func NewApp(config *Config) *App {
 		if cacheDir == "" {
 			cacheDir = os.TempDir()
 		}
+		err := os.MkdirAll(cacheDir, 0755)
+		if err != nil {
+			log.Fatalf("failed to create cache dir: %w", err)
+		}
+
 		rt = &CachingRoundTripper{
-			UnderlyingTransport: http.DefaultTransport, CacheDir: cacheDir,
+			UnderlyingTransport: http.DefaultTransport, CacheDir: path.Clean(cacheDir),
 		}
 
 		log.Printf("HTTP caching enabled in directory: %s", cacheDir)

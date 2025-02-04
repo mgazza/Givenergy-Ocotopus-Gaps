@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -41,9 +41,9 @@ func (c *CachingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	var bodyBytes []byte
 	if req.Body != nil {
 		// ReadAll consumes the entire body
-		bodyBytes, _ = ioutil.ReadAll(req.Body)
+		bodyBytes, _ = io.ReadAll(req.Body)
 		// Reassign a new ReadCloser so the next transport can still read it.
-		req.Body = ioutil.NopCloser(strings.NewReader(string(bodyBytes)))
+		req.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
 	}
 
 	// Build the key for caching. We ignore headers, so only method, URL, and body are used.
@@ -66,7 +66,7 @@ func (c *CachingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	defer resp.Body.Close()
 
 	// Read response body into memory so we can save it.
-	respBodyBytes, err := ioutil.ReadAll(resp.Body)
+	respBodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func (c *CachingRoundTripper) cacheFilePath(key string) string {
 
 // loadCachedResponse reads the cached file, deserializes it, and returns an *http.Response.
 func (c *CachingRoundTripper) loadCachedResponse(path string, req *http.Request) (*http.Response, error) {
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +125,7 @@ func saveCachedResponse(path string, cr *cachedResponse) error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0644)
 }
 
 // buildHTTPResponse constructs a new *http.Response from cachedResponse data.
@@ -135,7 +135,7 @@ func buildHTTPResponse(req *http.Request, cr cachedResponse) *http.Response {
 		StatusCode:    cr.StatusCode,
 		Proto:         cr.Proto,
 		Header:        cr.Header,
-		Body:          ioutil.NopCloser(strings.NewReader(string(cr.Body))),
+		Body:          io.NopCloser(strings.NewReader(string(cr.Body))),
 		ContentLength: int64(len(cr.Body)),
 		Request:       req,
 	}

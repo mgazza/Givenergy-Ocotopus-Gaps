@@ -3,7 +3,6 @@ module github.com/mgazza/givenergy-octopus-gaps
 go 1.23.2
 
 require (
-	git.sr.ht/~mariusor/cache v0.0.0-20250122165545-14c90d7a9de8
 	github.com/go-openapi/runtime v0.28.0
 	github.com/go-openapi/strfmt v0.23.0
 	github.com/mgazza/go-geotogether v0.0.0-20250203210029-b48fae9b972f
