@@ -1,13 +1,11 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -36,25 +34,20 @@ func (c *CachingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		c.UnderlyingTransport = http.DefaultTransport
 	}
 
-	// Read the request body into memory so we can hash it
-	// and also send it on to the next transport.
+	// Read the request body into memory so we can reuse it for the real request.
+	// (We do this even though we aren't hashing it anymore.)
 	var bodyBytes []byte
 	if req.Body != nil {
-		// ReadAll consumes the entire body
 		bodyBytes, _ = io.ReadAll(req.Body)
-		// Reassign a new ReadCloser so the next transport can still read it.
 		req.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
 	}
 
-	// Build the key for caching. We ignore headers, so only method, URL, and body are used.
-	cacheKey := cacheKey(req.Method, req.URL.String(), bodyBytes)
+	// Build a filename from the method + URL. Then sanitize it.
+	fileName := sanitizeFileName(req.Method + "_" + req.URL.String())
+	cacheFilePath := filepath.Join(c.CacheDir, fileName+".json")
 
-	// Construct the full file path in the cache directory.
-	cacheFilePath := c.cacheFilePath(cacheKey)
-
-	// If we have a cached file, try to load it.
+	// If we have a cached file, try to load it and return it.
 	if _, err := os.Stat(cacheFilePath); err == nil {
-		// Cached file exists; load and return its contents.
 		return c.loadCachedResponse(cacheFilePath, req)
 	}
 
@@ -87,22 +80,6 @@ func (c *CachingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	return buildHTTPResponse(req, cr), nil
 }
 
-// cacheKey builds a SHA-256 hash string from method, url, and request body.
-func cacheKey(method, url string, body []byte) string {
-	hash := sha256.New()
-	hash.Write([]byte(method))
-	hash.Write([]byte(url))
-	if len(body) > 0 {
-		hash.Write(body)
-	}
-	return hex.EncodeToString(hash.Sum(nil))
-}
-
-// cacheFilePath returns the path to the cache file for the given key.
-func (c *CachingRoundTripper) cacheFilePath(key string) string {
-	return fmt.Sprintf("%s/%s.json", c.CacheDir, key)
-}
-
 // loadCachedResponse reads the cached file, deserializes it, and returns an *http.Response.
 func (c *CachingRoundTripper) loadCachedResponse(path string, req *http.Request) (*http.Response, error) {
 	data, err := os.ReadFile(path)
@@ -115,7 +92,6 @@ func (c *CachingRoundTripper) loadCachedResponse(path string, req *http.Request)
 		return nil, err
 	}
 
-	// Build an http.Response from the cached data
 	return buildHTTPResponse(req, cr), nil
 }
 
@@ -139,4 +115,32 @@ func buildHTTPResponse(req *http.Request, cr cachedResponse) *http.Response {
 		ContentLength: int64(len(cr.Body)),
 		Request:       req,
 	}
+}
+
+// sanitizeFileName replaces or removes characters that are invalid or awkward
+// for filenames across different operating systems. Adjust as needed.
+func sanitizeFileName(name string) string {
+	// Replace potentially problematic characters with underscores.
+	replacer := strings.NewReplacer(
+		"/", "_",
+		"\\", "_",
+		":", "_",
+		"*", "_",
+		"?", "_",
+		"\"", "_",
+		"<", "_",
+		">", "_",
+		"|", "_",
+		"&", "_",
+		"=", "_",
+		"%", "_",
+		" ", "_",
+	)
+	safe := replacer.Replace(name)
+
+	// Optionally, limit length to prevent extremely long file names:
+	// if len(safe) > 200 {
+	// 	   safe = safe[:200]
+	// }
+	return safe
 }
