@@ -103,89 +103,49 @@ func (s *GeoTogetherService) PopulateGeoData(usage map[time.Time]*UsageRow, star
 		return fmt.Errorf("getting system readings: %w", err)
 	}
 
-	// ** Step 1: Build Cumulative Energy Map **
-	cumulativeEnergy := make(map[time.Time]int64)
-	cumulativeGas := make(map[time.Time]int64)
-	cumulativeCost := make(map[time.Time]int64)
-	cumulativeGasCost := make(map[time.Time]int64)
+	// ** Store Energy Readings in Local Time **
+	energyReadings := make(map[time.Time]int64)
+	gasReadings := make(map[time.Time]int64)
+	costReadings := make(map[time.Time]int64)
+	gasCostReadings := make(map[time.Time]int64)
 
-	var lastCumulativeEnergy int64
-	var lastCumulativeGas int64
-	var lastCumulativeCost int64
-	var lastCumulativeGasCost int64
-
-	count := 0
 	for _, readingGroup := range readings {
+		timestamp := time.Unix(int64(readingGroup.StartTimestamp), 0).Local() // Convert to local time
+
 		for _, reading := range readingGroup.Readings {
-			count++
-			startTime := time.Unix(int64(readingGroup.StartTimestamp), 0).Local()
-
-			if startTime.Before(startDate) {
-				log.Printf("Warning discarded GEO data before start date %s", startTime.Format(time.RFC3339))
-				continue
-			}
-
-			if startTime.After(endDate) {
-				log.Printf("Warning discarded GEO data past end date %s", startTime.Format(time.RFC3339))
-				continue
-			}
-
-			endTime := startTime.Add(time.Duration(reading.Duration) * time.Second)
-
-			// Store cumulative energy at each timestamp
 			switch reading.EnergyType {
 			case "IMPORT":
-				cumulativeEnergy[endTime] = lastCumulativeEnergy + (reading.EnergyWattHours)
-				cumulativeCost[endTime] = lastCumulativeCost + (reading.MilliPenceCost)
-				lastCumulativeEnergy = cumulativeEnergy[endTime]
-				lastCumulativeCost = cumulativeCost[endTime]
+				energyReadings[timestamp] += reading.EnergyWattHours
+				costReadings[timestamp] += reading.MilliPenceCost
 			case "GAS_ENERGY":
-				cumulativeGas[endTime] = lastCumulativeGas + (reading.EnergyWattHours)
-				cumulativeGasCost[endTime] = lastCumulativeGasCost + (reading.MilliPenceCost)
-				lastCumulativeGas = cumulativeGas[endTime]
-				lastCumulativeGasCost = cumulativeGasCost[endTime]
+				gasReadings[timestamp] += reading.EnergyWattHours
+				gasCostReadings[timestamp] += reading.MilliPenceCost
 			}
 		}
 	}
 
-	// ** Step 2: Walk Through Data in 30-Minute Slots **
-	var prevEnergy int64
-	var prevGas int64
-	var prevCost int64
-	var prevGasCost int64
+	// ** Aggregate Energy & Cost Readings into 30-Minute Buckets in Local Time **
+	for t := startDate.Truncate(30 * time.Minute).Local(); t.Before(endDate); t = t.Add(30 * time.Minute) {
+		var sumEnergy, sumGas, sumCost, sumGasCost int64
 
-	for t := startDate.Truncate(30 * time.Minute); t.Before(endDate); t = t.Add(30 * time.Minute) {
-		var (
-			sumEnergy,
-			sumGas,
-			sumCost,
-			sumGasCost,
-			count int64
-		)
-
-		// Aggregate all intervals that fall within this 30-minute slot
-		for offset := 0; offset < 30; offset += 5 { // Works for 5m, 10m, 15m intervals
-			ts := t.Add(time.Duration(offset) * time.Minute)
-
-			if value, exists := cumulativeEnergy[ts]; exists {
-				sumEnergy += value - prevEnergy
-				prevEnergy = value
+		for offset := 0; offset < 30; offset += 15 {
+			ts := t.Add(time.Duration(offset) * time.Minute).Local() // Ensure lookups use local time
+			if value, exists := energyReadings[ts]; exists {
+				sumEnergy += value
 			}
-			if value, exists := cumulativeGas[ts]; exists {
-				sumGas += value - prevGas
-				prevGas = value
+			if value, exists := gasReadings[ts]; exists {
+				sumGas += value
 			}
-			if value, exists := cumulativeCost[ts]; exists {
-				sumCost += value - prevCost
-				prevCost = value
+			if value, exists := costReadings[ts]; exists {
+				sumCost += value
 			}
-			if value, exists := cumulativeGasCost[ts]; exists {
-				sumGasCost += value - prevGasCost
-				prevGasCost = value
+			if value, exists := gasCostReadings[ts]; exists {
+				sumGasCost += value
 			}
-			count++
 		}
-		if count == 0 {
+
+		// If no data, leave it as nil
+		if sumEnergy == 0 && sumGas == 0 {
 			log.Printf("No GEO data for %s, leaving as nil", t.Format(time.RFC3339))
 			continue
 		}
@@ -193,20 +153,17 @@ func (s *GeoTogetherService) PopulateGeoData(usage map[time.Time]*UsageRow, star
 		// Ensure the rounded time exists in the usage map
 		row, exists := usage[t]
 		if !exists {
-			rt := UsageRow{
-				Timestamp: t,
-			}
-			row = &rt
+			row = &UsageRow{Timestamp: t}
 			usage[t] = row
 		}
 
-		// Assign energy used in the 30-minute window
+		// Assign energy and cost values for the 30-minute window
 		row.GEO_ImportWh = &sumEnergy
 		row.GEO_ImportGasWh = &sumGas
 		row.GEO_ImportMilliPenceCost = &sumCost
 		row.GEO_ImportGasMilliPenceCost = &sumGasCost
 	}
 
-	log.Printf("Fetched %d GEO records", count)
+	log.Printf("Fetched %d GEO records", len(energyReadings))
 	return nil
 }
