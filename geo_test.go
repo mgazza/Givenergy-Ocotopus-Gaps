@@ -14,8 +14,8 @@ import (
 func TestPopulateGeoData(t *testing.T) {
 	mockRoundTripper := &MockRoundTripper{
 		Handler: func(req *http.Request) (*http.Response, error) {
-
 			responseBody := ""
+
 			if strings.Contains(req.URL.Path, "/usersservice/v2/login") {
 				responseBody = `{
 				  "username": "wibble",
@@ -28,66 +28,19 @@ func TestPopulateGeoData(t *testing.T) {
 				responseBody = `{
 				  "systemRoles": [
 					{
-					  "name": "abbbb",
-					  "systemId": "456",
-					  "roles": [
-						"READ",
-						"WRITE"
-					  ]
-					},
-					{
-					  "name": "bffff",
+					  "name": "Home",
 					  "systemId": "123",
-					  "roles": [
-						"READ",
-						"WRITE"
-					  ]
+					  "roles": ["READ", "WRITE"]
 					}
 				  ],
 				  "systemDetails": [
-					{
-					  "name": "Home",
-					  "devices": [],
-					  "systemId": "456"
-					},
 					{
 					  "name": "Home",
 					  "devices": [
 						{
 						  "deviceType": "TRIO_II_TB_GEO",
 						  "sensorType": 94,
-						  "nodeId": 0,
-						  "versionNumber": {
-							"major": 5,
-							"minor": 8
-						  },
-						  "pairedTimestamp": 0,
-						  "pairingCode": "CCCCCC",
-						  "upgradeRequired": false
-						},
-						{
-						  "deviceType": "WIFI_MODULE",
-						  "sensorType": 81,
-						  "nodeId": 64,
-						  "versionNumber": {
-							"major": 2,
-							"minor": 6
-						  },
-						  "pairedTimestamp": 0,
-						  "pairingCode": "EEEEEE",
-						  "upgradeRequired": false
-						},
-						{
-						  "deviceType": "JN5169_ZIGBEE",
-						  "sensorType": 96,
-						  "nodeId": 65,
-						  "versionNumber": {
-							"major": 139,
-							"minor": 142
-						  },
-						  "pairedTimestamp": 0,
-						  "pairingCode": "DDDDDD",
-						  "upgradeRequired": false
+						  "nodeId": 0
 						}
 					  ],
 					  "systemId": "123"
@@ -112,8 +65,8 @@ func TestPopulateGeoData(t *testing.T) {
 						"energyType": "GAS_ENERGY",
 						"tierType": "VARIABLE",
 						"duration": 900,
-						"energyWattHours": 0,
-						"milliPenceCost": 0
+						"energyWattHours": 500,
+						"milliPenceCost": 12000
 					  }
 					]
 				  },
@@ -132,8 +85,8 @@ func TestPopulateGeoData(t *testing.T) {
 						"energyType": "GAS_ENERGY",
 						"tierType": "VARIABLE",
 						"duration": 900,
-						"energyWattHours": 0,
-						"milliPenceCost": 0
+						"energyWattHours": 600,
+						"milliPenceCost": 15000
 					  }
 					]
 				  },
@@ -152,13 +105,12 @@ func TestPopulateGeoData(t *testing.T) {
 						"energyType": "GAS_ENERGY",
 						"tierType": "VARIABLE",
 						"duration": 900,
-						"energyWattHours": 0,
-						"milliPenceCost": 0
+						"energyWattHours": 700,
+						"milliPenceCost": 18000
 					  }
 					]
 				  }
-			]`
-
+				]`
 			} else {
 				t.Fatalf("unhandled request %s", req.URL)
 			}
@@ -173,28 +125,39 @@ func TestPopulateGeoData(t *testing.T) {
 
 	// Mock service with the fake HTTP response
 	mockGeoService, err := NewGeoTogetherService(mockRoundTripper, "user", "password")
-
 	require.NoError(t, err)
 
 	usage := make(map[time.Time]*UsageRow)
 	startDate := time.Date(2024, 12, 9, 2, 0, 0, 0, time.Local)
-	endDate := startDate.Add(1 * time.Hour) // Testing one hour window
+	endDate := startDate.Add(1 * time.Hour) // Testing one-hour window
 
 	// Run function
 	err = mockGeoService.PopulateGeoData(usage, startDate, endDate)
 	require.NoError(t, err)
 
 	// Expected Aggregated Readings
-	expectedReadings := map[time.Time]int64{
-		startDate:                       1470 + 1541, // 02:00 - 02:30
-		startDate.Add(30 * time.Minute): 1358,        // 02:30 - 03:00
+	expectedReadings := map[time.Time]struct {
+		importWh   int64
+		gasWh      int64
+		importCost int64
+		gasCost    int64
+	}{
+		startDate:                       {1470 + 1541, 500 + 600, 34559 + 36228, 12000 + 15000}, // 02:00 - 02:30
+		startDate.Add(30 * time.Minute): {1358, 700, 31926, 18000},                              // 02:30 - 03:00
 	}
 
 	// Validate results
-	for timestamp, expectedWh := range expectedReadings {
+	for timestamp, expected := range expectedReadings {
 		row, exists := usage[timestamp]
 		require.True(t, exists, "Expected data for %s", timestamp)
 		require.NotNil(t, row.GEO_ImportWh)
-		require.Equal(t, expectedWh, *row.GEO_ImportWh, "Mismatch at %s", timestamp)
+		require.NotNil(t, row.GEO_ImportGasWh)
+		require.NotNil(t, row.GEO_ImportMilliPenceCost)
+		require.NotNil(t, row.GEO_ImportGasMilliPenceCost)
+
+		require.Equal(t, expected.importWh, *row.GEO_ImportWh, "Mismatch in importWh at %s", timestamp)
+		require.Equal(t, expected.gasWh, *row.GEO_ImportGasWh, "Mismatch in gasWh at %s", timestamp)
+		require.Equal(t, expected.importCost, *row.GEO_ImportMilliPenceCost, "Mismatch in importCost at %s", timestamp)
+		require.Equal(t, expected.gasCost, *row.GEO_ImportGasMilliPenceCost, "Mismatch in gasCost at %s", timestamp)
 	}
 }
