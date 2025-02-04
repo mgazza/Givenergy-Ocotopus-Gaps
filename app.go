@@ -2,15 +2,13 @@
 package main
 
 import (
-	"encoding/csv"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"sort"
 	"time"
-
-	"git.sr.ht/~mariusor/cache"
 )
 
 // Config contains configuration for the application.
@@ -21,6 +19,8 @@ type Config struct {
 	SerialNumber   string
 	OutputCSV      string
 	CacheDirectory string
+	GeoUsername    string
+	GeoPassword    string
 	StartTime      *time.Time
 	EndTime        time.Time
 }
@@ -32,8 +32,10 @@ type App struct {
 	GivService      *GivEnergyService
 	OctopusService  *OctopusService
 	ImportMeter     *MeterInfo
+	GasMeter        *MeterInfo
 	ExportMeter     *MeterInfo
 	CollectionStart time.Time
+	GeoService      *GeoTogetherService
 }
 
 func NewApp(config *Config) *App {
@@ -44,8 +46,14 @@ func NewApp(config *Config) *App {
 		if cacheDir == "" {
 			cacheDir = os.TempDir()
 		}
-		//rt = cache.ForDuration(24*time.Hour, http.DefaultTransport, cache.FS(cacheDir))
-		rt = cache.Shared(http.DefaultTransport, cache.FS(cacheDir))
+		err := os.MkdirAll(cacheDir, 0755)
+		if err != nil {
+			log.Fatalf("failed to create cache dir: %v", err)
+		}
+
+		rt = &CachingRoundTripper{
+			UnderlyingTransport: http.DefaultTransport, CacheDir: path.Clean(cacheDir),
+		}
 
 		log.Printf("HTTP caching enabled in directory: %s", cacheDir)
 	} else {
@@ -57,7 +65,7 @@ func NewApp(config *Config) *App {
 	octopusService := NewOctopusService(rt, config.APIKey)
 
 	// Fetch meter and tariff details
-	importMeter, exportMeter, err := octopusService.GetMetersAndTariff(config.AccountID)
+	importMeter, exportMeter, gasMeter, err := octopusService.GetMetersAndTariff(config.AccountID)
 	if err != nil {
 		log.Fatalf("Failed to get meter and tariff details: %v", err)
 	}
@@ -80,27 +88,60 @@ func NewApp(config *Config) *App {
 		collectionStart = *config.StartTime
 	}
 
+	geoService, err := NewGeoTogetherService(rt, config.GeoUsername, config.GeoPassword)
+	if err != nil {
+		log.Fatalf("Failed to initialize GeoTogether service: %v", err)
+	}
+
 	return &App{
 		Config:          config,
 		HTTPClient:      &http.Client{Transport: rt},
 		GivService:      givService,
 		OctopusService:  octopusService,
 		ImportMeter:     importMeter,
+		GasMeter:        gasMeter,
 		ExportMeter:     exportMeter,
 		CollectionStart: collectionStart,
+		GeoService:      geoService,
 	}
 }
 
 func (app *App) Run() error {
 	log.Println("Starting application...")
-	log.Printf("Getting GivEnergy inverter data for %s %s\n", app.CollectionStart.Format(time.RFC3339), app.Config.EndTime.Format(time.RFC3339))
+	log.Printf("Using date range %s - %s", app.CollectionStart.Format(time.RFC3339), app.Config.EndTime.Format(time.RFC3339))
+
+	usage := make(map[time.Time]*UsageRow)
+	var err error
+
+	// Get data from geo
+	log.Println("Getting Octopus data...")
+	err = app.OctopusService.GetMeterConsumption(usage, app.ImportMeter, app.CollectionStart, app.Config.EndTime.UTC(), func(value float64, row *UsageRow) {
+		row.OCTO_ImportKWh = &value
+	})
+	if err != nil {
+		return fmt.Errorf("failed to fetch Ocotopus data: %w", err)
+	}
+
+	err = app.OctopusService.GetMeterConsumption(usage, app.ExportMeter, app.CollectionStart, app.Config.EndTime.UTC(), func(value float64, row *UsageRow) {
+		row.OCTO_ExportKWh = &value
+	})
+	if err != nil {
+		return fmt.Errorf("failed to fetch Ocotopus data: %w", err)
+	}
+
+	// Get data from geo
+	log.Println("Getting GEO data...")
+	err = app.GeoService.PopulateGeoData(usage, app.CollectionStart, app.Config.EndTime.UTC())
+	if err != nil {
+		return fmt.Errorf("failed to fetch GEO data: %w", err)
+	}
 
 	// Fetch GivEnergy data
-	givData, err := app.GivService.FetchHalfHourlyInverterData(app.Config.SerialNumber, app.CollectionStart, app.Config.EndTime.UTC())
+	log.Printf("Getting GivEnergy inverter data ...")
+	err = app.GivService.FetchHalfHourlyInverterData(usage, app.Config.SerialNumber, app.CollectionStart, app.Config.EndTime.Local())
 	if err != nil {
 		return fmt.Errorf("failed to fetch GivEnergy data: %w", err)
 	}
-	log.Printf("Fetched %d GivEnergy records", len(givData))
 
 	// Fetch Octopus tariffs for both import and export meters
 	importTariffs, err := app.OctopusService.FetchTariffs(app.ImportMeter.ProductCode, app.ImportMeter.TariffCode, app.CollectionStart, app.Config.EndTime.UTC())
@@ -117,7 +158,7 @@ func (app *App) Run() error {
 
 	// Calculate half-hourly costs
 	var data []*UsageRow
-	for timestamp, row := range givData {
+	for timestamp, row := range usage {
 		row.ImportPrice = findRateForTime(timestamp, importTariffs)
 		row.ExportPrice = findRateForTime(timestamp, exportTariffs)
 		data = append(data, row)
@@ -136,67 +177,7 @@ func (app *App) Run() error {
 	return nil
 }
 
-func writeCSV(filename string, data []*UsageRow) error {
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
-	// Remove the first row as since we don't have the data for the previous row it's not valid
-	data = data[1:]
-
-	header := []string{
-		"Timestamp",
-		"Cumulative_Import",
-		"Cumulative_Export",
-		"Import_KWh",
-		"Export_KWh",
-		"Import_Price",
-		"Export_Price",
-		"Import_Cost",
-		"Export_Cost",
-	}
-	if err := writer.Write(header); err != nil {
-		return err
-	}
-
-	for _, row := range data {
-		// Convert prices to integer representation (pence * 10,000)
-		importPriceInt := int64(row.ImportPrice * 10000)
-		exportPriceInt := int64(row.ExportPrice * 10000)
-
-		// Convert kWh to integer representation (kWh * 10,000)
-		importKWhInt := int64(row.ImportKWh * 10000)
-		exportKWhInt := int64(row.ExportKWh * 10000)
-
-		// Compute costs as integer math (total pence * 10,000)
-		importCostInt := (importKWhInt * importPriceInt) / 10000
-		exportCostInt := (exportKWhInt * exportPriceInt) / 10000
-
-		record := []string{
-			row.Timestamp.Format(time.RFC3339),
-			fmt.Sprintf("%.4f", row.CumulativeImportInverter),
-			fmt.Sprintf("%.4f", row.CumulativeExportInverter),
-			fmt.Sprintf("%.16f", row.ImportKWh),
-			fmt.Sprintf("%.16f", row.ExportKWh),
-			fmt.Sprintf("%.4f", row.ImportPrice),
-			fmt.Sprintf("%.4f", row.ExportPrice),
-			fmt.Sprintf("%.2f", float64(importCostInt)/10000),
-			fmt.Sprintf("%.2f", float64(exportCostInt)/10000),
-		}
-		if err := writer.Write(record); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func findRateForTime(t time.Time, intervals []TariffData) float64 {
+func findRateForTime(t time.Time, intervals []TariffData) *float64 {
 	for _, iv := range intervals {
 		// Handle nil Start: treat as before zero time
 		startBefore := iv.ValidFrom == nil || !t.Before(*iv.ValidFrom)
@@ -204,10 +185,10 @@ func findRateForTime(t time.Time, intervals []TariffData) float64 {
 		endAfter := iv.ValidTo == nil || t.Before(*iv.ValidTo)
 
 		if startBefore && endAfter {
-			return iv.Rate
+			return &iv.Rate
 		}
 	}
-	return 0.0
+	return nil
 }
 
 func truncateToMidnight(t time.Time) time.Time {
